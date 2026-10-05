@@ -29,6 +29,9 @@
     window.setInterval(paint, 1000);
   }
 
+  const eventLabel = (raw) =>
+    String(raw || "").toLowerCase() === "violence" ? "Safety incident" : raw;
+
   const formatStamp = (iso) => {
     const date = new Date(iso);
     if (Number.isNaN(date.getTime())) return iso;
@@ -164,7 +167,7 @@
     sev.textContent = card.dataset.severity;
     sev.className = `pill ${card.dataset.severity}`;
     inspector.querySelector("#inspector-ch").textContent = `CH ${card.dataset.channel}`;
-    inspector.querySelector("#inspector-title").textContent = `${pct}% ${card.dataset.label}`;
+    inspector.querySelector("#inspector-title").textContent = `${pct}% ${eventLabel(card.dataset.label)}`;
     inspector.querySelector("#inspector-meter").style.width = `${pct}%`;
     inspector.querySelector("#inspector-time").textContent = formatStamp(card.dataset.time);
     inspector.querySelector("#inspector-status").textContent = saved ? "Retained in archive" : "In the review queue";
@@ -173,7 +176,7 @@
     const blank = inspector.querySelector("#inspector-empty");
     if (card.dataset.url) {
       img.src = card.dataset.url;
-      img.alt = `${card.dataset.label} frame`;
+      img.alt = `${eventLabel(card.dataset.label)} frame`;
       img.hidden = false;
       blank.hidden = true;
     } else {
@@ -204,9 +207,9 @@
     const pct = Math.floor(Number(card.dataset.confidence) * 100);
     const img = document.getElementById("lightbox-img");
     img.src = card.dataset.url;
-    img.alt = `${card.dataset.label} frame`;
+    img.alt = `${eventLabel(card.dataset.label)} frame`;
     document.getElementById("lightbox-caption").textContent =
-      `${pct}% ${card.dataset.label} · CH ${card.dataset.channel} · ${formatStamp(card.dataset.time)}`;
+      `${pct}% ${eventLabel(card.dataset.label)} · CH ${card.dataset.channel} · ${formatStamp(card.dataset.time)}`;
     lightbox.hidden = false;
   };
 

@@ -18,9 +18,14 @@
     {%- if conf >= 0.8 -%}critical{%- elif conf >= 0.55 -%}elevated{%- else -%}watch{%- endif -%}
   {%- endmacro %}
 
+  {% macro event_label(label) -%}
+    {%- if label and label|lower == 'violence' -%}Safety incident{%- else -%}{{ label }}{%- endif -%}
+  {%- endmacro %}
+
   {% macro event_card(row) %}
     {% set sev = severity(row.confidence) %}
     {% set pct = (row.confidence * 100)|round(0, 'floor')|int %}
+    {% set shown = event_label(row.label) %}
     <article
       class="event"
       data-severity="{{ sev }}"
@@ -36,8 +41,8 @@
       tabindex="0"
     >
       {% if row.snapshot_url %}
-        <button class="shot" type="button" data-expand aria-label="Open frame for {{ row.label }}">
-          <img src="{{ row.snapshot_url }}" alt="Detection frame, {{ row.label }}, {{ pct }} percent">
+        <button class="shot" type="button" data-expand aria-label="Open frame for {{ shown }}">
+          <img src="{{ row.snapshot_url }}" alt="Detection frame, {{ shown }}, {{ pct }} percent">
           <span class="zoom">View frame</span>
         </button>
       {% else %}
@@ -48,7 +53,7 @@
           <span class="pill {{ sev }}">{{ sev }}</span>
           <span class="mono ch">CH {{ row.channel }}</span>
         </div>
-        <h3>{{ pct }}% {{ row.label }}</h3>
+        <h3>{{ pct }}% {{ shown }}</h3>
         <div class="meter" aria-hidden="true"><span style="width: {{ pct }}%"></span></div>
         <time class="stamp" datetime="{{ row.detected_at }}">{{ row.detected_at[:16]|replace('T', ' ') }}</time>
         <div class="actions">
@@ -130,7 +135,7 @@
           <p class="label">Latest event</p>
           {% if latest %}
             <strong class="ago" data-time="{{ latest.detected_at }}">{{ latest.detected_at[11:16] }}</strong>
-            <p class="sub stamp" datetime="{{ latest.detected_at }}">{{ latest.label }}</p>
+            <p class="sub stamp" datetime="{{ latest.detected_at }}">{{ event_label(latest.label) }}</p>
           {% else %}
             <strong>—</strong>
             <p class="sub">No detections yet</p>
