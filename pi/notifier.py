@@ -10,16 +10,32 @@ Configure in .env:
 On violence detection notify() will:
   1. Insert a row into Supabase violence_alerts (if SUPABASE_LOGGING=true)
   2. Send SMS to all numbers in SMS_TO (if SMS_ENABLED=true)
+  3. Send email via SMTP (if EMAIL_ENABLED=true) — by default only when SMS
+     is off or fails (EMAIL_MODE=fallback); EMAIL_MODE=always sends both.
 """
 
 from __future__ import annotations
 
 import json
+import smtplib
+import ssl
 from dataclasses import dataclass
+from email.message import EmailMessage
 from datetime import datetime, timezone
 from typing import Any
 
 from config import (
+    EMAIL_BODY,
+    EMAIL_ENABLED,
+    EMAIL_FROM,
+    EMAIL_MODE,
+    EMAIL_SUBJECT,
+    EMAIL_TO,
+    SMTP_HOST,
+    SMTP_PASSWORD,
+    SMTP_PORT,
+    SMTP_USER,
+    parse_email_recipients,
     SMS_ENABLED,
     SMS_TO,
     SUPABASE_ANON_KEY,
@@ -84,15 +100,24 @@ class SmsSendResult:
     error: str | None = None
 
 
+@dataclass
+class EmailSendResult:
+    ok: bool = False
+    error: str | None = None
+
+
 class AlertNotifier:
-    """Send SMS via Twilio; log every detection to Supabase."""
+    """Send SMS via Twilio (email as optional fallback); log every detection to Supabase."""
 
     def __init__(
         self,
         sms_enabled: bool | None = None,
         recipients: list[str] | None = None,
         supabase_logging: bool | None = None,
+        email_enabled: bool | None = None,
     ):
+        self.email_enabled = email_enabled if email_enabled is not None else EMAIL_ENABLED
+        self.email_recipients = parse_email_recipients(EMAIL_TO)
         self.sms_enabled = sms_enabled if sms_enabled is not None else SMS_ENABLED
         self.supabase_logging = (
             supabase_logging if supabase_logging is not None else SUPABASE_LOGGING
@@ -103,11 +128,55 @@ class AlertNotifier:
 
         self._init_supabase()
         self._init_sms()
+        self._init_email()
 
     @property
     def enabled(self) -> bool:
-        """True if SMS or Supabase logging is active."""
-        return self.sms_enabled or self._supabase is not None
+        """True if SMS, email or Supabase logging is active."""
+        return self.sms_enabled or self.email_enabled or self._supabase is not None
+
+    def _init_email(self) -> None:
+        if not self.email_enabled:
+            return
+        if not (SMTP_USER and SMTP_PASSWORD):
+            print("  [notifier] EMAIL_ENABLED=true but SMTP_USER/SMTP_PASSWORD missing — email disabled")
+            self.email_enabled = False
+            return
+        if not self.email_recipients:
+            print("  [notifier] EMAIL_TO empty — email disabled")
+            self.email_enabled = False
+            return
+        mode = "every alert" if EMAIL_MODE == "always" else "fallback when SMS fails"
+        print(f"  [notifier] Email ready → {', '.join(self.email_recipients)} | {mode}")
+
+    def send_email(self, event: AlertEvent | None = None) -> EmailSendResult:
+        """Send the alert email via SMTP. Returns a result; never raises."""
+        if not self.email_enabled:
+            return EmailSendResult(ok=False, error="email disabled")
+        try:
+            msg = EmailMessage()
+            msg["Subject"] = EMAIL_SUBJECT
+            msg["From"] = EMAIL_FROM
+            msg["To"] = ", ".join(self.email_recipients)
+            when_dt = event.detected_at if event else datetime.now(timezone.utc)
+            when = when_dt.astimezone().strftime("%d %b %Y, %I:%M:%S %p")
+            msg.set_content(f"{EMAIL_BODY}\n\nDate & Time: {when}")
+
+            context = ssl.create_default_context()
+            if SMTP_PORT == 465:
+                with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=context, timeout=20) as s:
+                    s.login(SMTP_USER, SMTP_PASSWORD)
+                    s.send_message(msg)
+            else:
+                with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as s:
+                    s.starttls(context=context)
+                    s.login(SMTP_USER, SMTP_PASSWORD)
+                    s.send_message(msg)
+            print(f"  [notifier] Email sent → {', '.join(self.email_recipients)}")
+            return EmailSendResult(ok=True)
+        except Exception as e:
+            print(f"  [notifier] Email failed: {e}")
+            return EmailSendResult(ok=False, error=str(e))
 
     def _init_supabase(self) -> None:
         if not self.supabase_logging:
@@ -302,17 +371,32 @@ class AlertNotifier:
         any_sms_ok = any(r.ok for r in sms_results) if sms_results else None
         first_error = next((r.error for r in sms_results if r.error), None)
 
+        # Email: always (if EMAIL_MODE=always) or only when SMS is off / all failed.
+        email_result: EmailSendResult | None = None
+        if self.email_enabled:
+            sms_delivered = bool(sms_results) and any_sms_ok
+            if EMAIL_MODE == "always" or not sms_delivered:
+                if sms_results and not sms_delivered:
+                    print("  [notifier] SMS failed — falling back to email")
+                email_result = self.send_email(event)
+
         supabase_row = self.log_supabase(
             event,
             sms_ok=any_sms_ok if sms_results else None,
             sms_error=first_error,
         )
 
-        ok = bool(supabase_row) or any(r.ok for r in sms_results)
+        email_ok = bool(email_result and email_result.ok)
+        ok = bool(supabase_row) or any(r.ok for r in sms_results) or email_ok
+        if not first_error and email_result and email_result.error:
+            first_error = email_result.error
 
         return {
             "ok": ok,
             "sms": [{"to": r.to, "sid": r.sid, "ok": r.ok, "error": r.error} for r in sms_results],
+            "email": (
+                {"ok": email_result.ok, "error": email_result.error} if email_result else None
+            ),
             "alert": supabase_row,
             "reason": None if ok else (first_error or "notify_failed"),
         }
@@ -322,7 +406,7 @@ SupabaseWhatsAppNotifier = AlertNotifier
 
 
 def build_notifier_from_env() -> AlertNotifier | None:
-    if not SMS_ENABLED and not SUPABASE_LOGGING:
+    if not SMS_ENABLED and not SUPABASE_LOGGING and not EMAIL_ENABLED:
         return None
     notifier = AlertNotifier()
     return notifier if notifier.enabled else None

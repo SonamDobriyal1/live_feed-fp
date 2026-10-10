@@ -88,6 +88,23 @@ TWILIO_CONTENT_SID = os.getenv("TWILIO_CONTENT_SID", "")
 TWILIO_SMS_MODE = os.getenv("TWILIO_SMS_MODE", "auto").lower()
 SMS_TO = os.getenv("SMS_TO", "")
 
+# Email (optional SMTP alert, e.g. personal Gmail with an App Password)
+EMAIL_ENABLED = os.getenv("EMAIL_ENABLED", "false").lower() in ("1", "true", "yes")
+# fallback = send email only when SMS is off or every SMS failed
+# always   = send email on every alert in addition to SMS
+EMAIL_MODE = os.getenv("EMAIL_MODE", "fallback").lower()
+SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER", "")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "").replace(" ", "")
+EMAIL_FROM = os.getenv("EMAIL_FROM", "") or SMTP_USER
+EMAIL_TO = os.getenv("EMAIL_TO", "")
+EMAIL_SUBJECT = os.getenv("EMAIL_SUBJECT", "Alert: Safety incident at Daycare")
+EMAIL_BODY = os.getenv(
+    "EMAIL_BODY",
+    "Alert: Unusual / Safety incident reported at Daycare, Please check.",
+)
+
 # Supabase: alert rows, plus snapshot files in Storage
 SUPABASE_LOGGING = os.getenv("SUPABASE_LOGGING", "false").lower() in ("1", "true", "yes")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
@@ -102,6 +119,12 @@ DAYCARE_TZ = os.getenv("DAYCARE_TZ", "Asia/Kolkata")
 # Web portal ingest (Pi posts detections after the Supabase Storage upload)
 PORTAL_URL = os.getenv("PORTAL_URL", "").rstrip("/")
 PORTAL_INGEST_KEY = os.getenv("PORTAL_INGEST_KEY", "")
+
+
+def parse_email_recipients(raw: str | None = None) -> list[str]:
+    """Parse comma/semicolon/newline-separated email addresses."""
+    text = raw if raw is not None else EMAIL_TO
+    return [p.strip() for p in text.replace(";", ",").replace("\n", ",").split(",") if p.strip()]
 
 
 def parse_sms_recipients(raw: str | None = None) -> list[str]:

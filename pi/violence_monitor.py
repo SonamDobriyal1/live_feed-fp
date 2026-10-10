@@ -439,6 +439,8 @@ def main():
                         help="Skip SMS notifications")
     parser.add_argument("--test-sms", action="store_true",
                         help="Send test SMS + log to Supabase, then exit")
+    parser.add_argument("--test-email", action="store_true",
+                        help="Send a test alert email, then exit")
     parser.add_argument("--test-log", action="store_true",
                         help="Log a test detection to Supabase only (no SMS)")
     parser.add_argument("--probe-only", action="store_true",
@@ -468,6 +470,14 @@ def main():
         notifier.sms_enabled = False
         notifier._twilio = None
 
+    if args.test_email:
+        if notifier is None or not notifier.email_enabled:
+            print("ERROR: Set EMAIL_ENABLED=true + SMTP_USER/SMTP_PASSWORD/EMAIL_TO in .env")
+            sys.exit(1)
+        res = notifier.send_email()
+        print("Test result:", res)
+        sys.exit(0 if res.ok else 1)
+
     if args.test_log or args.test_sms:
         if notifier is None or not notifier.enabled:
             print("ERROR: Set SUPABASE_LOGGING=true + Supabase keys in .env")
@@ -476,6 +486,7 @@ def main():
         if args.test_log:
             notifier.sms_enabled = False
             notifier._twilio = None
+            notifier.email_enabled = False
         result = notifier.notify(AlertEvent(
             detected_at=datetime.now().astimezone(),
             confidence=0.99,
@@ -512,19 +523,32 @@ def main():
             print("  Supabase: logging enabled")
         if notifier.sms_enabled:
             print(f"  SMS: enabled → {', '.join(notifier.recipients)}")
-        elif not notifier._supabase:
+        if notifier.email_enabled:
+            print(f"  Email: enabled → {', '.join(notifier.email_recipients)}")
+        if not (notifier._supabase or notifier.sms_enabled or notifier.email_enabled):
             print("  Alerts: portal only")
     else:
         print("  SMS/Supabase logging: off (snapshots and portal still used if configured)")
 
     url = build_rtsp_url(args.channel, args.subtype)
     print("\nConnecting to camera...")
-    info = probe_stream(url)
-    if not info:
-        print("ERROR: Could not open stream. Check network / credentials.")
-        print("  Tips: ensure port 554 is reachable from Render; use CAMERA_SUBTYPE=1;")
-        print("  verify CAMERA_PASS in Render (special chars like $ must match exactly).")
-        sys.exit(1)
+    info = None
+    attempt = 0
+    while info is None:
+        attempt += 1
+        info = probe_stream(url)
+        if info:
+            break
+        wait = 10 if attempt < 6 else 30
+        print(
+            f"  Camera unreachable (attempt {attempt}). "
+            "Check LAN / DVR, then waiting "
+            f"{wait}s..."
+        )
+        if args.probe_only and attempt >= 3:
+            print("ERROR: Could not open stream. Check network / credentials.")
+            sys.exit(1)
+        time.sleep(wait)
     print(f"  Connected: {info['width']}x{info['height']} {info['codec']}")
 
     if args.probe_only:

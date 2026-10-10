@@ -75,11 +75,11 @@ def mask_url(url: str) -> str:
     return url.replace(CAMERA_PASS, "****")
 
 
-def probe_stream(url: str, timeout: int = 20) -> dict | None:
+def probe_stream(url: str, timeout: int = 30) -> dict | None:
     """Return video stream metadata, or None if unreachable."""
     masked = mask_url(url)
     print(f"  Probing: {masked}")
-    r = subprocess.run(
+    proc = subprocess.Popen(
         [
             FFPROBE,
             *ffprobe_input_opts(),
@@ -88,17 +88,25 @@ def probe_stream(url: str, timeout: int = 20) -> dict | None:
             "-of", "csv=p=0",
             url,
         ],
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        timeout=timeout,
     )
-    if r.returncode != 0:
-        err = (r.stderr or r.stdout or "").strip()
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        print(f"  Camera did not answer within {timeout}s — will retry")
+        return None
+    if proc.returncode != 0:
+        err = (stderr or stdout or "").strip()
         if err:
             print(f"  ffprobe error: {err[:400]}")
         return None
+    r_stdout = stdout
 
-    lines = [ln.strip() for ln in r.stdout.strip().split("\n") if ln.strip()]
+    lines = [ln.strip() for ln in (r_stdout or "").strip().split("\n") if ln.strip()]
     if not lines:
         return None
 
