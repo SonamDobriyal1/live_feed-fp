@@ -1,0 +1,18 @@
+[Unit]
+Description=CP Plus Violence Monitor with SMS Alerts
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=YOUR_USER
+WorkingDirectory=/path/to/live_feed/pi
+EnvironmentFile=/path/to/live_feed/.env
+ExecStart=/usr/bin/python3 violence_monitor.py --headless
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

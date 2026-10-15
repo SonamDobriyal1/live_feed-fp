@@ -1,0 +1,7 @@
+flask>=3.0.0
+python-dotenv>=1.0.0
+supabase>=2.0.0
+cloudinary>=1.41.0
+gunicorn>=22.0.0
+pywebpush>=2.0.0
+cryptography>=42.0.0

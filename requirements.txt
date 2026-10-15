@@ -1,0 +1,2 @@
+-r pi/requirements.txt
+-r web/requirements.txt

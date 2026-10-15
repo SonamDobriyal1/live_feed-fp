@@ -1,0 +1,22 @@
+# Live feed + violence detection + dashboard push alerts
+
+cd /Users/sonamdobriyal/Test/live_feed
+
+# 1) Configure
+cp pi/.env.example pi/.env
+cp web/.env.example web/.env
+# Edit: CAMERA_*, PORTAL_URL, PORTAL_INGEST_KEY
+
+pip3 install -r requirements.txt
+
+# 2) Start the dashboard, then click Enable alerts after login
+cd web && python3 app.py
+
+# 3) Run live (headless when DEPLOY_HEADLESS=true)
+cd pi && python3 violence_monitor.py
+
+# Docker deploy
+docker compose up -d --build
+docker compose logs -f
+
+# See DEPLOY.md for full VPS/systemd setup

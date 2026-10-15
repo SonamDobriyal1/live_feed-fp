@@ -1,0 +1,12 @@
+# Build from repo root: docker compose -f pi/docker-compose.yml up --build
+services:
+  violence-monitor:
+    build:
+      context: ..
+      dockerfile: pi/Dockerfile
+    container_name: violence-monitor
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ../alerts:/app/alerts

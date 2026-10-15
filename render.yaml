@@ -1,0 +1,37 @@
+# Shared daycare dashboard — ML stays on each Raspberry Pi.
+# Deploy: Render → New → Blueprint → this repo
+# After live: set PORTAL_URL on every Pi to https://<this-service>.onrender.com
+
+services:
+  - type: web
+    name: daycare-dashboard
+    runtime: docker
+    dockerfilePath: ./web/Dockerfile
+    dockerContext: .
+    plan: starter
+    region: singapore
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: DATA_DIR
+        value: /var/data
+      - key: DAYCARE_TZ
+        value: Asia/Kolkata
+      - key: PORTAL_INGEST_KEY
+        sync: false
+      - key: PORTAL_SECRET_KEY
+        generateValue: true
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      # ip|camera-password|Daycare Name;ip|password|Other
+      - key: WEB_TENANTS
+        sync: false
+    disk:
+      name: portal-data
+      mountPath: /var/data
+      sizeGB: 1

@@ -1,0 +1,17 @@
+[Unit]
+Description=Daycare violence dashboard (web)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/opt/live_feed/web
+EnvironmentFile=/opt/live_feed/web/.env
+Environment=DATA_DIR=/var/lib/daycare-dashboard
+ExecStart=/opt/live_feed/web/.venv/bin/gunicorn --bind 0.0.0.0:8080 --workers 1 --threads 4 --timeout 60 app:app
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
