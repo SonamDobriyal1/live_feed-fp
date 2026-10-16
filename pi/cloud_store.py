@@ -80,12 +80,18 @@ def post_detection_to_web(payload: dict[str, Any], retries: int = 4) -> dict[str
         return None
 
     import json
+    import ssl
     import time
     import urllib.error
     import urllib.request
 
+    import certifi
+
     body = json.dumps(payload).encode("utf-8")
     url = urljoin(PORTAL_URL + "/", "api/detections")
+    # python.org macOS builds do not ship a CA bundle, so the default context
+    # fails with CERTIFICATE_VERIFY_FAILED against Render.
+    ssl_ctx = ssl.create_default_context(cafile=certifi.where())
     last_err = None
     for attempt in range(1, retries + 1):
         req = urllib.request.Request(
@@ -98,7 +104,7 @@ def post_detection_to_web(payload: dict[str, Any], retries: int = 4) -> dict[str
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=20) as resp:
+            with urllib.request.urlopen(req, timeout=20, context=ssl_ctx) as resp:
                 raw = resp.read().decode("utf-8")
                 return json.loads(raw) if raw else {"ok": True}
         except urllib.error.HTTPError as e:

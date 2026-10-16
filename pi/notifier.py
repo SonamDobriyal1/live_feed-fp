@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import smtplib
 import ssl
+
+import certifi
 from dataclasses import dataclass
 from email.message import EmailMessage
 from datetime import datetime, timezone
@@ -156,7 +158,7 @@ class AlertNotifier:
                 body = EMAIL_BODY
             msg.set_content(body)
 
-            context = ssl.create_default_context()
+            context = ssl.create_default_context(cafile=certifi.where())
             if SMTP_PORT == 465:
                 with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=context, timeout=20) as s:
                     s.login(SMTP_USER, SMTP_PASSWORD)

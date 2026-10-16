@@ -6,10 +6,14 @@ Resolution: 2560x1440 (4MP) | Codec: H.265/HEVC | FPS: 25
 Uses ffmpeg subprocess to pipe decoded frames to OpenCV (required because
 the pip opencv-python on macOS ARM does not include FFMPEG/HEVC support).
 
+The window overlays the YOLOv8 violence classifier (SAFE / VIOLENCE DETECTED).
+
 Usage:
-    python3 rtsp_viewer.py                     # display live feed
+    python3 rtsp_viewer.py                     # live feed + detection overlay
     python3 rtsp_viewer.py --channel 2         # channel 2
     python3 rtsp_viewer.py --subtype 1         # sub-stream (lower res)
+    python3 rtsp_viewer.py --every 4           # classify every 4th frame
+    python3 rtsp_viewer.py --no-detect         # raw feed, no model
     python3 rtsp_viewer.py --save output.mp4   # record to file
     python3 rtsp_viewer.py --snapshot          # save one frame as PNG
     python3 rtsp_viewer.py --headless          # no display (record/snapshot only)
@@ -25,7 +29,8 @@ import os
 import cv2
 import numpy as np
 
-from config import CAMERA_IP, CAMERA_USER, CAMERA_PASS, RTSP_PORT
+from config import CAMERA_IP, CAMERA_USER, CAMERA_PASS, RTSP_PORT, VIOLENCE_CONF, VIOLENCE_EVERY_N
+from violence_detector import ViolenceDetector, ViolenceResult
 
 FFMPEG = shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
 
@@ -74,8 +79,31 @@ def open_ffmpeg_pipe(url: str, width: int, height: int) -> subprocess.Popen:
                             bufsize=10 * width * height * 3)
 
 
+def draw_status(frame: np.ndarray, result: ViolenceResult | None) -> np.ndarray:
+    """Green SAFE bar, or red VIOLENCE bar with confidence."""
+    if result is None:
+        return frame
+    disp = frame.copy()
+    h, w = disp.shape[:2]
+    if result.is_violence:
+        color = (0, 0, 255)
+        text = f"VIOLENCE  {result.confidence:.0%}"
+    else:
+        color = (0, 180, 0)
+        text = "SAFE"
+    bar_h = max(56, h // 18)
+    cv2.rectangle(disp, (0, 0), (w, bar_h), color, -1)
+    font_scale = max(1.0, h / 700)
+    cv2.putText(
+        disp, text, (20, int(bar_h * 0.72)),
+        cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), 2, cv2.LINE_AA,
+    )
+    return disp
+
+
 def run_viewer(url: str, info: dict, save_path: str = None,
-               snapshot: bool = False, headless: bool = False):
+               snapshot: bool = False, headless: bool = False,
+               detector: ViolenceDetector | None = None, every_n: int = 4):
     w, h = info["width"], info["height"]
     if w == 0 or h == 0:
         w, h = 1920, 1080  # fallback
@@ -105,9 +133,12 @@ def run_viewer(url: str, info: dict, save_path: str = None,
     frame_size = w * h * 3
     frame_count = 0
     start = time.time()
+    latest: ViolenceResult | None = None
     masked = url.replace(CAMERA_PASS, "****")
     print(f"\nStream: {masked}")
     print(f"Resolution: {w}x{h}  Codec: {info['codec']}  FPS: {info['fps_str']}")
+    if detector:
+        print(f"Detection: every {every_n} frame(s)  threshold={detector.conf_threshold:.0%}")
     if not headless:
         print("Press 'q' to quit, 's' to save snapshot\n")
 
@@ -126,17 +157,30 @@ def run_viewer(url: str, info: dict, save_path: str = None,
                 elapsed = time.time() - start
                 fps_live = frame_count / elapsed if elapsed > 0 else 0
 
+                if detector and frame_count % every_n == 0:
+                    latest = detector.predict(frame)
+
                 if writer:
                     writer.write(frame)
 
                 if not headless:
-                    disp = frame.copy()
-                    cv2.putText(disp, f"FPS: {fps_live:.1f}  Frames: {frame_count}",
-                                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-                    cv2.putText(disp, time.strftime("%Y-%m-%d %H:%M:%S"),
-                                (10, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2)
-                    cv2.putText(disp, f"{w}x{h} {info['codec'].upper()}",
-                                (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 200, 0), 2)
+                    if detector:
+                        disp = draw_status(frame, latest)
+                    else:
+                        disp = frame.copy()
+                        cv2.putText(disp, f"FPS: {fps_live:.1f}  Frames: {frame_count}",
+                                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                        cv2.putText(disp, time.strftime("%Y-%m-%d %H:%M:%S"),
+                                    (10, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2)
+                        cv2.putText(disp, f"{w}x{h} {info['codec'].upper()}",
+                                    (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 200, 0), 2)
+                    # 4MP is larger than a laptop screen; scale the preview only.
+                    max_w = 1280
+                    if disp.shape[1] > max_w:
+                        scale = max_w / disp.shape[1]
+                        disp = cv2.resize(
+                            disp, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA,
+                        )
                     cv2.imshow("CP Plus Live Feed", disp)
                     key = cv2.waitKey(1) & 0xFF
                     if key == ord("q"):
@@ -165,6 +209,11 @@ def main():
     parser.add_argument("--save", metavar="FILE", help="Record to MP4 file")
     parser.add_argument("--snapshot", action="store_true", help="Save one frame PNG and exit")
     parser.add_argument("--headless", action="store_true", help="No display window (record only)")
+    parser.add_argument("--no-detect", action="store_true", help="Show the raw feed without the model")
+    parser.add_argument("--every", type=int, default=VIOLENCE_EVERY_N,
+                        help="Run the classifier every N frames (default from .env)")
+    parser.add_argument("--conf", type=float, default=VIOLENCE_CONF,
+                        help="Violence confidence threshold (default from .env)")
     args = parser.parse_args()
 
     print("=" * 55)
@@ -185,7 +234,21 @@ def main():
         sys.exit(1)
 
     print(f"  Connected! {info['width']}x{info['height']} {info['codec'].upper()} @ {info['fps_str']} fps\n")
-    run_viewer(url, info, save_path=args.save, snapshot=args.snapshot, headless=args.headless)
+
+    detector = None
+    if not args.no_detect and not args.snapshot:
+        print("Loading violence model...")
+        detector = ViolenceDetector(conf_threshold=args.conf)
+        print(f"  Classes: {detector.names}")
+
+    run_viewer(
+        url, info,
+        save_path=args.save,
+        snapshot=args.snapshot,
+        headless=args.headless,
+        detector=detector,
+        every_n=max(1, args.every),
+    )
 
 
 if __name__ == "__main__":
