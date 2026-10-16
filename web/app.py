@@ -204,12 +204,16 @@ def ingest_detection():
     purge_expired()
     det_id = store.insert_detection(payload)
     daycare_name = tenant["daycare_name"] or camera_ip
-    push.send_incident_push_async(
-        camera_ip,
-        daycare_name,
-        payload.get("detected_at"),
-    )
-    return jsonify({"ok": True, "id": det_id})
+    try:
+        push_result = push.send_incident_push(
+            camera_ip,
+            daycare_name,
+            payload.get("detected_at"),
+        )
+    except Exception as exc:
+        print(f"  [push] incident send failed: {exc}")
+        push_result = {"ok": False, "sent": 0, "error": str(exc)}
+    return jsonify({"ok": True, "id": det_id, "push": push_result})
 
 
 @app.route("/api/push/config")

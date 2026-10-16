@@ -29,6 +29,10 @@ Thumbs.db
 *.swp
 *.swo
 
+# Training images (do not push the dataset)
+ml-model/data/
+ml-model/dataset/
+
 # Local media / runtime outputs
 alerts/
 *.mp4

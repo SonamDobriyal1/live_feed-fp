@@ -2,7 +2,7 @@
 Live Violence Detection on CP Plus Camera Feed.
 
 Pulls RTSPS frames via ffmpeg, runs the YOLOv8 violence classifier,
-overlays results, and saves alert clips/snapshots when violence is detected.
+overlays results, and uploads an alert frame when violence is confirmed.
 
 Usage:
     python3 violence_monitor.py                      # live window + alerts
@@ -11,14 +11,13 @@ Usage:
     python3 violence_monitor.py --every 5            # infer every 5th frame
     python3 violence_monitor.py --save-alerts        # save clips on violence
     python3 violence_monitor.py --headless --save-alerts
-    python3 violence_monitor.py --weights path/to/best.pt
+    python3 violence_monitor.py --weights violence_yolov8n_cls-4/weights/best.pt
 """
 
 from __future__ import annotations
 
 import argparse
 import collections
-import csv
 import shutil
 import subprocess
 import sys
@@ -36,16 +35,18 @@ from config import (
     CAMERA_IP,
     CAMERA_SUBTYPE,
     CONFIRM_HITS,
+    CONFIRM_SPAN_SEC,
     CONFIRM_WINDOW,
     DAYCARE_NAME,
     DECODE_FPS,
     DECODE_WIDTH,
     DEPLOY_HEADLESS,
+    EMAIL_MODE,
     INFER_PAUSE_AFTER_ALERT_SEC,
     PORTAL_URL,
-    SAVE_CLIPS,
     VIOLENCE_CONF,
     VIOLENCE_EVERY_N,
+    VIOLENCE_WEIGHTS,
 )
 from cloud_store import publish_detection, storage_configured
 from notifier import AlertEvent, AlertNotifier, build_notifier_from_env
@@ -56,7 +57,7 @@ from stream_utils import (
     open_ffmpeg_pipe,
     probe_stream,
 )
-from violence_detector import DEFAULT_WEIGHTS, ViolenceDetector, ViolenceResult
+from violence_detector import ViolenceDetector, ViolenceResult
 
 
 def draw_overlay(
@@ -67,77 +68,48 @@ def draw_overlay(
 ) -> np.ndarray:
     disp = frame.copy()
     h, w = disp.shape[:2]
+    scale = max(0.45, min(0.7, h / 420))
+    bar_h = max(28, int(34 * scale / 0.5))
 
-    # Status bar
     if result is None:
-        color = (180, 180, 180)
-        text = "Warming up..."
-    elif result.is_violence:
-        color = (0, 0, 255)
-        text = f"VIOLENCE DETECTED  {result.confidence:.0%}"
+        color = (90, 90, 90)
+        label = "starting"
+    elif result.is_violence or alert_active:
+        color = (0, 0, 210)
+        label = "unsafe"
     else:
-        color = (0, 200, 0)
-        text = f"SAFE  {result.label}  {result.confidence:.0%}"
+        color = (0, 140, 60)
+        label = "calm"
 
-    bar_h = max(48, h // 25)
     cv2.rectangle(disp, (0, 0), (w, bar_h), color, -1)
     cv2.putText(
-        disp, text, (16, int(bar_h * 0.7)),
-        cv2.FONT_HERSHEY_SIMPLEX, max(0.7, h / 900), (255, 255, 255), 2, cv2.LINE_AA,
+        disp, label, (10, int(bar_h * 0.72)),
+        cv2.FONT_HERSHEY_SIMPLEX, scale, (255, 255, 255), 1, cv2.LINE_AA,
     )
-
-    # Meta
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    stamp = datetime.now().strftime("%H:%M:%S")
+    (tw, _), _ = cv2.getTextSize(stamp, cv2.FONT_HERSHEY_SIMPLEX, scale * 0.75, 1)
     cv2.putText(
-        disp, f"{ts}  |  {fps:.1f} FPS  |  {CAMERA_IP}",
-        (16, bar_h + 28), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA,
+        disp, stamp, (w - tw - 10, int(bar_h * 0.72)),
+        cv2.FONT_HERSHEY_SIMPLEX, scale * 0.75, (255, 255, 255), 1, cv2.LINE_AA,
     )
-
-    if result is not None:
-        y = bar_h + 55
-        for name, score in result.scores.items():
-            cv2.putText(
-                disp, f"{name}: {score:.1%}",
-                (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (220, 220, 220), 1, cv2.LINE_AA,
-            )
-            y += 22
-
-    if alert_active:
-        cv2.rectangle(disp, (8, 8), (w - 8, h - 8), (0, 0, 255), 6)
-        cv2.putText(
-            disp, "ALERT", (w - 160, bar_h + 40),
-            cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3, cv2.LINE_AA,
-        )
-
     return disp
 
 
 class AlertManager:
-    """Saves snapshots when violence is confirmed; uploads to Cloudinary off-thread."""
+    """Confirms an alert and uploads the frame. Nothing is written on the device."""
 
     def __init__(
         self,
-        out_dir: Path,
         cooldown_sec: float = 10.0,
         buffer_size: int = 20,
         notifier: AlertNotifier | None = None,
         channel: int = 1,
-        save_clips: bool = False,
     ):
-        self.out_dir = out_dir
-        self.out_dir.mkdir(parents=True, exist_ok=True)
         self.cooldown_sec = cooldown_sec
         self.buffer: collections.deque = collections.deque(maxlen=buffer_size)
         self.last_alert_time = 0.0
         self.notifier = notifier
         self.channel = channel
-        self.save_clips = save_clips
-        self.log_path = self.out_dir / "alerts.csv"
-        if not self.log_path.exists():
-            with open(self.log_path, "w", newline="") as f:
-                csv.writer(f).writerow(
-                    ["timestamp", "confidence", "label", "snapshot", "clip"]
-                )
 
     def push(self, frame: np.ndarray):
         self.buffer.append(frame)
@@ -146,53 +118,22 @@ class AlertManager:
         self,
         result: ViolenceResult,
         snapshot: np.ndarray | None = None,
-    ) -> Path | None:
+    ) -> bool:
         now = time.time()
         if not result.is_violence:
-            return None
+            return False
         if now - self.last_alert_time < self.cooldown_sec:
-            return None
+            return False
 
         self.last_alert_time = now
         detected_at = datetime.now().astimezone()
-        stamp = detected_at.strftime("%Y%m%d_%H%M%S")
-        snap_path = self.out_dir / f"alert_{stamp}.jpg"
-        clip_path = self.out_dir / f"alert_{stamp}.mp4"
         # Prefer the highest-confidence frame from the confirmation window.
         latest = snapshot if snapshot is not None else (
             self.buffer[-1] if self.buffer else None
         )
 
-        if latest is not None:
-            cv2.imwrite(str(snap_path), latest, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
-
-        if self.save_clips and len(self.buffer) >= 5:
-            h, w = self.buffer[0].shape[:2]
-            writer = cv2.VideoWriter(
-                str(clip_path),
-                cv2.VideoWriter_fourcc(*"mp4v"),
-                8.0,
-                (w, h),
-            )
-            for f in self.buffer:
-                writer.write(f)
-            writer.release()
-        else:
-            clip_path = Path("")
-
-        with open(self.log_path, "a", newline="") as f:
-            csv.writer(f).writerow([
-                detected_at.isoformat(timespec="seconds"),
-                f"{result.confidence:.4f}",
-                result.label,
-                snap_path.name,
-                clip_path.name if clip_path else "",
-            ])
-
         print(
-            f"\n  ALERT saved → {snap_path.name}  "
-            f"(highest-confidence frame {result.confidence:.0%})"
-            + (f" + {clip_path.name}" if clip_path else "")
+            f"\n  ALERT  (highest-confidence frame {result.confidence:.0%})"
         )
 
         frame_copy = latest.copy() if latest is not None else None
@@ -200,6 +141,7 @@ class AlertManager:
         def _publish():
             snapshot_url = None
             public_id = None
+            push_delivered = False
             if frame_copy is not None:
                 published = publish_detection(
                     frame_copy,
@@ -211,6 +153,8 @@ class AlertManager:
                 cloud = published.get("storage") or {}
                 snapshot_url = cloud.get("url")
                 public_id = cloud.get("public_id")
+                web = published.get("web") or {}
+                push_delivered = int((web.get("push") or {}).get("sent") or 0) > 0
             if self.notifier:
                 self.notifier.notify(AlertEvent(
                     detected_at=detected_at,
@@ -218,14 +162,12 @@ class AlertManager:
                     label=result.label,
                     camera_ip=CAMERA_IP,
                     channel=self.channel,
-                    snapshot_path=snap_path.name,
-                    clip_path=clip_path.name if clip_path else None,
                     snapshot_url=snapshot_url,
                     cloudinary_public_id=public_id,
-                ))
+                ), push_delivered=push_delivered)
 
         threading.Thread(target=_publish, daemon=True).start()
-        return snap_path
+        return True
 
 
 def run_monitor(
@@ -244,6 +186,7 @@ def run_monitor(
     decode_fps: float = DECODE_FPS,
     confirm_hits: int = CONFIRM_HITS,
     confirm_window: int = CONFIRM_WINDOW,
+    confirm_span_sec: float = CONFIRM_SPAN_SEC,
 ):
     src_w, src_h = info["width"], info["height"]
     if src_w == 0 or src_h == 0:
@@ -252,11 +195,9 @@ def run_monitor(
 
     alert_mgr = (
         AlertManager(
-            Path("alerts"),
             notifier=notifier,
             channel=channel,
             cooldown_sec=cooldown_sec,
-            save_clips=SAVE_CLIPS,
             buffer_size=20,
         )
         if save_alerts else None
@@ -268,9 +209,9 @@ def run_monitor(
     skipped_infer = 0
     start = time.time()
     confirm_hits = max(1, confirm_hits)
-    confirm_window = max(confirm_hits, confirm_window)
-    # (is_violence, result, frame) for the last N inferences
-    hit_window: collections.deque = collections.deque(maxlen=confirm_window)
+    confirm_span_sec = max(1.0, confirm_span_sec)
+    # Violence frames only. Calm frames do not erase them; they age out.
+    hit_window: collections.deque = collections.deque()
     alert_active = False
     pause_until = 0.0
     last_pause_log = 0.0
@@ -280,10 +221,9 @@ def run_monitor(
         f"Decode ≤{decode_width}px @ {decode_fps:.0f} fps  |  "
         f"infer every {every_n} frame(s)  |  threshold={detector.conf_threshold:.0%}"
     )
-    window_sec = confirm_window * every_n / decode_fps if decode_fps else 0
     print(
-        f"Confirm {confirm_hits} of last {confirm_window} inferences "
-        f"(~{window_sec:.1f}s window)"
+        f"Confirm {confirm_hits} violence frames within {confirm_span_sec:.0f}s "
+        "(calm frames in between are ignored)"
     )
     print(f"ML pause after alert: {pause_after_alert_sec:.0f}s (Pi cooldown)")
     print("Press 'q' to quit, 's' for snapshot\n")
@@ -310,6 +250,8 @@ def run_monitor(
                 frame = np.frombuffer(raw, dtype=np.uint8).reshape((h, w, 3))
                 frame_count += 1
                 now = time.time()
+                elapsed = now - start
+                fps = frame_count / elapsed if elapsed > 0 else 0
                 paused = now < pause_until
 
                 if alert_mgr and not paused:
@@ -328,16 +270,24 @@ def run_monitor(
                     latest = detector.predict(frame)
                     infer_count += 1
 
-                    snap = frame.copy() if latest.is_violence else None
-                    hit_window.append((latest.is_violence, latest, snap))
-                    hits = sum(1 for is_v, _, _ in hit_window if is_v)
-                    alert_active = hits >= confirm_hits
+                    cutoff = now - confirm_span_sec
+                    hit_window = collections.deque(
+                        item for item in hit_window if item[0] >= cutoff
+                    )
+                    if latest.is_violence:
+                        hit_window.append((now, latest, frame.copy()))
+                        print(
+                            f"  frames={frame_count}  infer={infer_count}  "
+                            f"skipped={skipped_infer}  fps={fps:.1f}  "
+                            f"unsafe ({latest.confidence:.1%})"
+                        )
+                    alert_active = len(hit_window) >= confirm_hits
 
                     if alert_active and alert_mgr:
                         best_hit_result = None
                         best_hit_frame = None
-                        for is_v, res, frm in hit_window:
-                            if not is_v or res is None:
+                        for _ts, res, frm in hit_window:
+                            if res is None:
                                 continue
                             if (
                                 best_hit_result is None
@@ -349,7 +299,7 @@ def run_monitor(
                             best_hit_result or latest,
                             snapshot=best_hit_frame,
                         )
-                        if fired is not None and pause_after_alert_sec > 0:
+                        if fired and pause_after_alert_sec > 0:
                             pause_until = time.time() + pause_after_alert_sec
                             last_pause_log = time.time()
                             hit_window.clear()
@@ -357,9 +307,6 @@ def run_monitor(
                                 f"  ML paused for {pause_after_alert_sec:.0f}s "
                                 "to keep the device cool"
                             )
-
-                elapsed = now - start
-                fps = frame_count / elapsed if elapsed > 0 else 0
 
                 if not headless:
                     disp = draw_overlay(frame, latest, fps, alert_active)
@@ -382,8 +329,12 @@ def run_monitor(
                         fn = f"snapshot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
                         cv2.imwrite(fn, frame)
                         print(f"Snapshot: {fn}")
-                elif frame_count % 25 == 0 and not paused:
-                    status = latest or "warming up"
+                elif frame_count % 25 == 0 and not paused and not (latest and latest.is_violence):
+                    if latest is None:
+                        status = "starting"
+                    else:
+                        word = "unsafe" if latest.label.lower() == "violence" else "calm"
+                        status = f"{word} ({latest.confidence:.1%})"
                     print(
                         f"  frames={frame_count}  infer={infer_count}  "
                         f"skipped={skipped_infer}  fps={fps:.1f}  {status}"
@@ -402,8 +353,6 @@ def run_monitor(
         cv2.destroyAllWindows()
 
     print(f"\nDone. Frames={frame_count}  Inferences={infer_count}  Skipped={skipped_infer}")
-    if alert_mgr:
-        print(f"Alerts folder: {alert_mgr.out_dir.resolve()}")
 
 
 def main():
@@ -411,15 +360,18 @@ def main():
     parser.add_argument("--channel", type=int, default=CAMERA_CHANNEL)
     parser.add_argument("--subtype", type=int, default=CAMERA_SUBTYPE, choices=[0, 1],
                         help="0=main HD (slower), 1=sub-stream (recommended for ML)")
-    parser.add_argument("--weights", default=str(DEFAULT_WEIGHTS))
+    parser.add_argument("--weights", default=VIOLENCE_WEIGHTS,
+                        help="Classifier weights (default: daycare fine-tune)")
     parser.add_argument("--conf", type=float, default=VIOLENCE_CONF,
                         help="Violence confidence threshold")
     parser.add_argument("--every", type=int, default=VIOLENCE_EVERY_N,
                         help="Run inference every N frames")
     parser.add_argument("--confirm", type=int, default=CONFIRM_HITS,
-                        help="Violence inferences required in the confirm window (default 8)")
+                        help="Violence frames required before an alert (default 8)")
+    parser.add_argument("--confirm-span", type=float, default=CONFIRM_SPAN_SEC,
+                        help="Seconds those frames must fall inside (default 45)")
     parser.add_argument("--confirm-window", type=int, default=CONFIRM_WINDOW,
-                        help="Recent inferences to count (default 10; 8 of 10)")
+                        help="Unused. Kept so older commands still start")
     parser.add_argument("--cooldown", type=float, default=ALERT_COOLDOWN_SEC,
                         help="Seconds between portal alerts (default 300)")
     parser.add_argument("--pause", type=float, default=INFER_PAUSE_AFTER_ALERT_SEC,
@@ -502,7 +454,8 @@ def main():
         if notifier._supabase:
             print("  Supabase: logging enabled")
         if notifier.email_enabled:
-            print(f"  Email: enabled → {', '.join(notifier.email_recipients)}")
+            email_when = "every alert" if EMAIL_MODE == "always" else "fallback if push is not delivered"
+            print(f"  Email: {email_when} → {', '.join(notifier.email_recipients)}")
         if not (notifier._supabase or notifier.email_enabled):
             print("  Alerts: portal push (enable alerts on the dashboard)")
     else:
@@ -560,6 +513,7 @@ def main():
         decode_fps=args.decode_fps,
         confirm_hits=max(1, args.confirm),
         confirm_window=max(1, args.confirm_window),
+        confirm_span_sec=max(1.0, args.confirm_span),
     )
 
 

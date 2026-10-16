@@ -1,7 +1,9 @@
 """
 YOLOv8 violence classifier wrapper.
 
-Model: pi/violence_yolov8n_cls-4/weights/best.pt
+Models in pi/violence_yolov8n_cls-4/weights/:
+  best.pt              original classifier
+  best_daycare_ft.pt   daycare fine-tune (selected by VIOLENCE_WEIGHTS)
 Classes: 0 = non_violence, 1 = violence
 Input size: 224x224
 """
@@ -75,10 +77,17 @@ class ViolenceDetector:
 
     def predict(self, frame_bgr: np.ndarray) -> ViolenceResult:
         """Classify a single BGR frame. Returns ViolenceResult."""
-        # Resize before YOLO so Pi does not copy a 720p tensor every infer.
+        # Keep the camera's aspect ratio. Squashing a 16:9 frame into a
+        # square makes a calm room score as violence.
         h, w = frame_bgr.shape[:2]
-        if w != INFER_SIZE or h != INFER_SIZE:
-            frame_bgr = cv2.resize(frame_bgr, (INFER_SIZE, INFER_SIZE), interpolation=cv2.INTER_AREA)
+        long_side = max(h, w)
+        if long_side > 640:
+            scale = 640 / long_side
+            frame_bgr = cv2.resize(
+                frame_bgr,
+                (max(1, int(w * scale)), max(1, int(h * scale))),
+                interpolation=cv2.INTER_AREA,
+            )
 
         kwargs = {"verbose": False, "imgsz": INFER_SIZE, "device": self.device}
         results = self.model.predict(frame_bgr, **kwargs)

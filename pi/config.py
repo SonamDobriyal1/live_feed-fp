@@ -46,16 +46,23 @@ HTTP_SNAPSHOT = f"http://{CAMERA_IP}/cgi-bin/snapshot.cgi?channel=1"
 HTTP_LOGIN = f"http://{CAMERA_IP}/RPC2_Login"
 HTTP_STREAM = f"http://{CAMERA_IP}/cgi-bin/mjpg/video.cgi?channel=1&subtype=1"
 
-# Violence model
-VIOLENCE_WEIGHTS = os.getenv(
+# Violence model.
+# best.pt is the original classifier. best_daycare_ft.pt is the daycare fine-tune.
+_WEIGHTS_DIR = Path(__file__).parent / "violence_yolov8n_cls-4" / "weights"
+_weights_raw = os.getenv(
     "VIOLENCE_WEIGHTS",
-    str(Path(__file__).parent / "violence_yolov8n_cls-4" / "weights" / "best.pt"),
+    str(_WEIGHTS_DIR / "best_daycare_ft.pt"),
 )
+_weights_path = Path(_weights_raw)
+if not _weights_path.is_absolute():
+    _weights_path = Path(__file__).parent / _weights_path
+VIOLENCE_WEIGHTS = str(_weights_path)
 VIOLENCE_CONF = float(os.getenv("VIOLENCE_CONF", "0.60"))
 VIOLENCE_EVERY_N = int(os.getenv("VIOLENCE_EVERY_N", "4"))
-# Alert when CONFIRM_HITS of the last CONFIRM_WINDOW inferences are violence
-# (8 of 10 ≈ 8s at 5 fps / every 4). Window == hits is consecutive-only.
+# Alert after CONFIRM_HITS violence frames inside CONFIRM_SPAN_SEC.
+# Calm frames in between do not reset the count; old hits age out.
 CONFIRM_HITS = int(os.getenv("CONFIRM_HITS", "8"))
+CONFIRM_SPAN_SEC = float(os.getenv("CONFIRM_SPAN_SEC", "45"))
 CONFIRM_WINDOW = int(os.getenv("CONFIRM_WINDOW", "10"))
 ALERT_COOLDOWN_SEC = float(os.getenv("ALERT_COOLDOWN_SEC", "300"))
 # After a confirmed alert, skip YOLO for this many seconds (keeps Pi cool, cuts lag).
@@ -69,9 +76,13 @@ TORCH_NUM_THREADS = int(os.getenv("TORCH_NUM_THREADS", "2"))
 # Deployment
 DEPLOY_HEADLESS = os.getenv("DEPLOY_HEADLESS", "true").lower() in ("1", "true", "yes")
 
-# Email (optional SMTP alert, e.g. personal Gmail with an App Password)
-# Incident push notifications are sent by the web dashboard, not the Pi.
+# Email (optional SMTP alert, e.g. personal Gmail with an App Password).
+# fallback: send only when the dashboard push reached nobody.
+# always: send on every alert, even if push succeeded.
 EMAIL_ENABLED = os.getenv("EMAIL_ENABLED", "false").lower() in ("1", "true", "yes")
+EMAIL_MODE = os.getenv("EMAIL_MODE", "fallback").strip().lower()
+if EMAIL_MODE not in ("fallback", "always"):
+    EMAIL_MODE = "fallback"
 SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER = os.getenv("SMTP_USER", "")

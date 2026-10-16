@@ -12,7 +12,9 @@ Configure in .env:
 
 On violence detection notify() will:
   1. Insert a row into Supabase violence_alerts (if SUPABASE_LOGGING=true)
-  2. Send email via SMTP (if EMAIL_ENABLED=true)
+  2. Send email via SMTP when EMAIL_ENABLED=true.
+     EMAIL_MODE=fallback sends only if the website push reached nobody.
+     EMAIL_MODE=always sends on every alert.
 """
 
 from __future__ import annotations
@@ -23,11 +25,15 @@ from dataclasses import dataclass
 from email.message import EmailMessage
 from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from config import (
+    DAYCARE_NAME,
+    DAYCARE_TZ,
     EMAIL_BODY,
     EMAIL_ENABLED,
     EMAIL_FROM,
+    EMAIL_MODE,
     EMAIL_SUBJECT,
     EMAIL_TO,
     SMTP_HOST,
@@ -121,7 +127,20 @@ class AlertNotifier:
             print("  [notifier] EMAIL_TO empty — email disabled")
             self.email_enabled = False
             return
-        print(f"  [notifier] Email ready → {', '.join(self.email_recipients)}")
+        mode = "on every alert" if EMAIL_MODE == "always" else "only if website push is not delivered"
+        print(f"  [notifier] Email ready ({mode}) → {', '.join(self.email_recipients)}")
+
+    def incident_text(self, event: AlertEvent | None = None) -> str:
+        """Same sentence the website push uses."""
+        tz = ZoneInfo(DAYCARE_TZ)
+        when_dt = event.detected_at if event else datetime.now(tz)
+        if when_dt.tzinfo is None:
+            when_dt = when_dt.replace(tzinfo=tz)
+        local = when_dt.astimezone(tz)
+        hour = local.strftime("%I").lstrip("0") or "0"
+        when = f"{local.day} {local.strftime('%b %Y')}, {hour}:{local.strftime('%M %p')}"
+        name = DAYCARE_NAME or "Daycare"
+        return f"Unusual/ safety incident detected at {when} at {name}"
 
     def send_email(self, event: AlertEvent | None = None) -> EmailSendResult:
         """Send the alert email via SMTP. Returns a result; never raises."""
@@ -132,9 +151,10 @@ class AlertNotifier:
             msg["Subject"] = EMAIL_SUBJECT
             msg["From"] = EMAIL_FROM
             msg["To"] = ", ".join(self.email_recipients)
-            when_dt = event.detected_at if event else datetime.now(timezone.utc)
-            when = when_dt.astimezone().strftime("%d %b %Y, %I:%M:%S %p")
-            msg.set_content(f"{EMAIL_BODY}\n\nDate & Time: {when}")
+            body = self.incident_text(event)
+            if EMAIL_BODY and event is None:
+                body = EMAIL_BODY
+            msg.set_content(body)
 
             context = ssl.create_default_context()
             if SMTP_PORT == 465:
@@ -197,13 +217,19 @@ class AlertNotifier:
             print(f"  [notifier] Supabase insert failed: {e}")
             return None
 
-    def notify(self, event: AlertEvent) -> dict[str, Any]:
+    def notify(self, event: AlertEvent, *, push_delivered: bool = False) -> dict[str, Any]:
         if not self.enabled:
             return {"ok": False, "reason": "disabled"}
 
         email_result: EmailSendResult | None = None
-        if self.email_enabled:
+        if self.email_enabled and (EMAIL_MODE == "always" or not push_delivered):
+            if push_delivered:
+                print("  [notifier] Push delivered — also sending email")
+            else:
+                print("  [notifier] Push not delivered — sending email fallback")
             email_result = self.send_email(event)
+        elif self.email_enabled and push_delivered:
+            print("  [notifier] Push delivered — email skipped")
 
         supabase_row = self.log_supabase(event)
         email_ok = bool(email_result and email_result.ok)
