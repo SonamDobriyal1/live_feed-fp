@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sajag AI — frame review</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header class="top">
+    <div>
+      <p class="eyebrow">Dummy review portal</p>
+      <h1>See which frames the model calls unsafe</h1>
+    </div>
+    <p class="meta">{{ weights }} · {{ conf }}% threshold · {{ sample_fps|int }} fps sample · Grad-CAM focus box</p>
+  </header>
+
+  <form class="upload" id="upload-form">
+    <label class="drop" for="video">
+      <input id="video" name="video" type="file" accept="video/mp4,video/quicktime,video/webm,video/x-msvideo" required>
+      <strong>Upload a clip</strong>
+      <span>MP4 / MOV / WEBM. The model scores sampled frames and paints the region that pushed the score.</span>
+    </label>
+    <button class="btn" type="submit">Analyze</button>
+  </form>
+  <p class="status" id="status" hidden></p>
+
+  <section class="result" id="result" hidden>
+    <div class="kpis">
+      <article><p>Sampled</p><strong id="kpi-sampled">0</strong></article>
+      <article class="unsafe"><p>Unsafe</p><strong id="kpi-unsafe">0</strong></article>
+      <article class="safe"><p>Safe</p><strong id="kpi-safe">0</strong></article>
+      <article><p>Clip</p><strong id="kpi-file">—</strong></article>
+    </div>
+    <div class="timeline" id="timeline" aria-label="Frame timeline"></div>
+    <div class="filters">
+      <button type="button" class="chip is-on" data-filter="all">All</button>
+      <button type="button" class="chip" data-filter="unsafe">Unsafe only</button>
+      <button type="button" class="chip" data-filter="safe">Safe only</button>
+    </div>
+    <div class="stage">
+      <figure>
+        <img id="hero" alt="Selected frame with model focus">
+        <div class="view-toggle">
+          <button type="button" class="chip is-on" data-view="cam">Heatmap + box</button>
+          <button type="button" class="chip" data-view="raw">Original frame</button>
+        </div>
+        <figcaption id="caption"></figcaption>
+      </figure>
+      <aside id="detail"></aside>
+    </div>
+    <div class="strip" id="strip"></div>
+  </section>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

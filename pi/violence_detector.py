@@ -5,7 +5,8 @@ Models in pi/violence_yolov8n_cls-4/weights/:
   best.pt              original classifier, not used
   best_daycare_ft.pt   calm-room fine-tune
   best_action_ft.pt    earlier struggle-clip fine-tune
-  best_newdata_ft.pt   latest fine-tune (selected by VIOLENCE_WEIGHTS)
+  best_newdata_ft.pt   previous fine-tune
+  best_final_ft.pt     latest fine-tune (selected by VIOLENCE_WEIGHTS)
 Classes: 0 = non_violence, 1 = violence
 Input size: 224x224
 """

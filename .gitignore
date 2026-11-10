@@ -34,6 +34,13 @@ ml-model/data/
 ml-model/new_data/
 ml-model/dataset/
 ml-model/dataset_actions/
+ml-model/dataset_final/
+ml-model/final_data/
+ml-model/review_portal/work/
+
+# Live capture for later labeling
+pi/recordings/*
+!pi/recordings/.gitkeep
 
 # Local media / runtime outputs
 alerts/
